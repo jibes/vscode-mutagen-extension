@@ -32,7 +32,7 @@ Mutagen is **automatically downloaded** from GitHub Releases on first use — no
 1. Open a workspace folder
 2. Click the **$(circle-slash) Mutagen** item in the status bar, or run **Remote Sync: Connect to Server** from the command palette
 3. Follow the 4-step wizard:
-   - Enter host, port, username, remote path
+   - Enter host, port, username, remote path *(if the workspace has an SSH git remote, these are pre-filled automatically)*
    - The extension tests your existing SSH key; if it doesn't work it will ask for your password and install the key for you
 4. Sync starts automatically — the status bar turns to **$(check) Watching** when all files are in sync
 
