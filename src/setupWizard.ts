@@ -2,6 +2,8 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import { RemoteSyncConfig, DEFAULT_IGNORES, writeConfig } from './config';
 import {
   ensureSshKey,
@@ -10,6 +12,9 @@ import {
   tryKeylessConnection,
   addHostToKnownHosts
 } from './sshKeyManager';
+import { log, logDebug } from './logger';
+
+const execFileAsync = promisify(execFile);
 
 // ---------------------------------------------------------------------------
 // Result type
@@ -37,8 +42,14 @@ export interface WizardResult {
 export async function runSetupWizard(
   workspaceFolder: vscode.WorkspaceFolder
 ): Promise<WizardResult | null> {
+  // Try to pre-fill from git remote before showing any input boxes
+  const gitDefaults = await detectGitRemoteDefaults(workspaceFolder.uri.fsPath);
+  if (gitDefaults) {
+    log(`Git remote detected: ${gitDefaults.username}@${gitDefaults.host}:${gitDefaults.port} path=${gitDefaults.remotePath ?? '(none)'}`);
+  }
+
   // Step 1: Connection details (no password yet)
-  const connectionDetails = await collectConnectionDetails();
+  const connectionDetails = await collectConnectionDetails(gitDefaults ?? undefined);
   if (!connectionDetails) {
     return null;
   }
@@ -89,12 +100,27 @@ interface ConnectionDetails {
   remotePath: string;
 }
 
-async function collectConnectionDetails(): Promise<ConnectionDetails | null> {
+interface GitRemoteDefaults {
+  host: string;
+  port: number;
+  username: string;
+  /** May be null if we can't derive a meaningful sync path from the git URL */
+  remotePath: string | null;
+}
+
+async function collectConnectionDetails(
+  defaults?: GitRemoteDefaults
+): Promise<ConnectionDetails | null> {
+  const gitHint = defaults
+    ? ` (detected from git remote: ${defaults.username}@${defaults.host})`
+    : '';
+
   // Host
   const host = await vscode.window.showInputBox({
     title: 'Remote Sync Setup (1/4) — Server',
-    prompt: 'Enter the server hostname or IP address',
+    prompt: `Enter the server hostname or IP address${gitHint}`,
     placeHolder: 'your.server.com or 192.168.1.100',
+    value: defaults?.host ?? '',
     ignoreFocusOut: true,
     validateInput: v => (v.trim() ? null : 'Host is required')
   });
@@ -104,7 +130,7 @@ async function collectConnectionDetails(): Promise<ConnectionDetails | null> {
   const portStr = await vscode.window.showInputBox({
     title: 'Remote Sync Setup (1/4) — Port',
     prompt: 'SSH port',
-    value: '22',
+    value: String(defaults?.port ?? 22),
     ignoreFocusOut: true,
     validateInput: v => {
       const n = parseInt(v, 10);
@@ -119,16 +145,19 @@ async function collectConnectionDetails(): Promise<ConnectionDetails | null> {
     title: 'Remote Sync Setup (1/4) — Username',
     prompt: 'SSH username',
     placeHolder: 'ubuntu',
+    value: defaults?.username ?? '',
     ignoreFocusOut: true,
     validateInput: v => (v.trim() ? null : 'Username is required')
   });
   if (username === undefined) return null;
 
-  // Remote path
+  // Remote path — pre-fill from git remote if we have a usable path,
+  // otherwise leave empty so the user types it themselves.
   const remotePath = await vscode.window.showInputBox({
     title: 'Remote Sync Setup (1/4) — Remote Path',
-    prompt: 'Absolute path on the remote server',
+    prompt: 'Absolute path on the remote server to sync to',
     placeHolder: '/var/www/projectname',
+    value: defaults?.remotePath ?? '',
     ignoreFocusOut: true,
     validateInput: v => {
       if (!v.trim()) return 'Remote path is required';
@@ -340,6 +369,119 @@ async function confirmAndWriteConfig(
 
   writeConfig(workspaceFolder, config);
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// Git remote detection
+// ---------------------------------------------------------------------------
+
+/**
+ * Tries to detect SSH connection details from the workspace's git remote.
+ *
+ * Handles the two SSH URL formats that git uses:
+ *
+ *   SCP-style:  git@github.com:user/repo.git
+ *               ubuntu@192.168.2.4:myproject.git
+ *
+ *   ssh:// URL: ssh://ubuntu@192.168.2.4:2222/var/www/project.git
+ *               ssh://git@github.com/user/repo.git
+ *
+ * HTTPS remotes are ignored (not SSH, can't be used for Mutagen).
+ *
+ * Returns null if no SSH remote is found or git is not available.
+ */
+async function detectGitRemoteDefaults(
+  workspacePath: string
+): Promise<GitRemoteDefaults | null> {
+  try {
+    // Get the URL of 'origin' first; fall back to first available remote.
+    let remoteUrl: string | null = null;
+    try {
+      const { stdout } = await execFileAsync('git', ['remote', 'get-url', 'origin'], {
+        cwd: workspacePath
+      });
+      remoteUrl = stdout.trim();
+    } catch {
+      // No 'origin' — try listing all remotes and pick the first one
+      try {
+        const { stdout } = await execFileAsync('git', ['remote', '-v'], {
+          cwd: workspacePath
+        });
+        const firstLine = stdout.trim().split('\n')[0];
+        // Format: "origin\tgit@host:path (fetch)"
+        const match = firstLine?.match(/^\S+\s+(\S+)/);
+        remoteUrl = match?.[1] ?? null;
+      } catch {
+        return null;
+      }
+    }
+
+    if (!remoteUrl) return null;
+    logDebug('Git remote URL:', remoteUrl);
+
+    return parseGitRemoteUrl(remoteUrl);
+  } catch (err) {
+    logDebug('detectGitRemoteDefaults error (non-fatal):', err);
+    return null;
+  }
+}
+
+/**
+ * Parse a git remote URL into SSH connection components.
+ * Returns null for HTTPS/git:// URLs (not usable for SSH sync).
+ */
+function parseGitRemoteUrl(remoteUrl: string): GitRemoteDefaults | null {
+  // ── ssh:// URL ─────────────────────────────────────────────────────────────
+  // Examples:
+  //   ssh://ubuntu@192.168.2.4:2222/var/www/project.git
+  //   ssh://git@github.com/user/repo.git
+  const sshProtoMatch = remoteUrl.match(
+    /^ssh:\/\/(?:([^@]+)@)?([^/:]+)(?::(\d+))?(\/[^?#]*)?/
+  );
+  if (sshProtoMatch) {
+    const [, user, host, portStr, urlPath] = sshProtoMatch;
+    return {
+      host,
+      port: portStr ? parseInt(portStr, 10) : 22,
+      username: user ?? os.userInfo().username,
+      remotePath: deriveRemotePath(urlPath ?? null)
+    };
+  }
+
+  // ── SCP-style: [user@]host:path ────────────────────────────────────────────
+  // Must NOT start with a scheme and must contain a colon after the host part.
+  // Exclude Windows paths like C:\foo and URLs like https://...
+  if (!remoteUrl.includes('://') && !remoteUrl.startsWith('/')) {
+    const scpMatch = remoteUrl.match(/^(?:([^@]+)@)?([^:]+):(.+)$/);
+    if (scpMatch) {
+      const [, user, host, urlPath] = scpMatch;
+      return {
+        host,
+        port: 22,
+        username: user ?? os.userInfo().username,
+        remotePath: deriveRemotePath(urlPath.startsWith('/') ? urlPath : null)
+      };
+    }
+  }
+
+  // HTTPS, git://, file:// — not SSH
+  logDebug('Git remote is not an SSH URL, skipping:', remoteUrl);
+  return null;
+}
+
+/**
+ * Convert a git repo path to a probable sync root path.
+ *
+ * - Strips trailing `.git` suffix
+ * - Only returns an absolute path (/var/www/project → kept as-is)
+ * - Relative paths (user/repo.git on GitHub) are dropped → returns null
+ *   so the wizard leaves the field empty for the user to fill in
+ */
+function deriveRemotePath(rawPath: string | null): string | null {
+  if (!rawPath) return null;
+  const stripped = rawPath.replace(/\.git\/?$/, '').replace(/\/$/, '');
+  // Only keep absolute paths
+  return stripped.startsWith('/') ? stripped || null : null;
 }
 
 // ---------------------------------------------------------------------------
