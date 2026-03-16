@@ -14,8 +14,8 @@ const execFileAsync = promisify(execFile);
 // ---------------------------------------------------------------------------
 
 type WebviewToExtension =
-  | { type: 'useLocal';    filePath: string }
-  | { type: 'useRemote';   filePath: string }
+  | { type: 'useLocal';    filePath: string; localAbsPath: string }
+  | { type: 'useRemote';   filePath: string; localAbsPath: string; remoteTempPath: string }
   | { type: 'viewDiff';    filePath: string; localAbsPath: string; remoteTempPath: string }
   | { type: 'refresh' };
 
@@ -93,19 +93,29 @@ export class ConflictResolver implements vscode.Disposable {
     try {
       switch (msg.type) {
         case 'useLocal': {
-          await this.manager.resolveConflict(msg.filePath, 'local');
+          // Mutagen v0.18 has no CLI resolve command.
+          // Resolution = make both sides identical, then flush so Mutagen
+          // re-scans and clears the conflict.
+          // "Use Local" → push local file to remote via scp.
+          await this.resolveByPushingLocal(msg.filePath, msg.localAbsPath);
           await this.sendMessage({ type: 'resolveOk', filePath: msg.filePath });
           void vscode.window.showInformationMessage(
-            `Kept local version: "${msg.filePath}"`
+            `Kept local version of "${msg.filePath}" — pushing to server.`
           );
           break;
         }
 
         case 'useRemote': {
-          await this.manager.resolveConflict(msg.filePath, 'remote');
+          // "Use Server" → overwrite local file with the remote temp copy.
+          if (!msg.remoteTempPath || !fs.existsSync(msg.remoteTempPath)) {
+            throw new Error('Remote file not available — try "View Diff" to fetch it first.');
+          }
+          log(`Overwriting local "${msg.localAbsPath}" with remote temp "${msg.remoteTempPath}"`);
+          fs.copyFileSync(msg.remoteTempPath, msg.localAbsPath);
+          await this.manager.flush();
           await this.sendMessage({ type: 'resolveOk', filePath: msg.filePath });
           void vscode.window.showInformationMessage(
-            `Kept server version: "${msg.filePath}"`
+            `Kept server version of "${msg.filePath}" — local file updated.`
           );
           break;
         }
@@ -206,6 +216,33 @@ export class ConflictResolver implements vscode.Disposable {
     }
 
     return enriched;
+  }
+
+  /**
+   * Resolve a conflict by pushing the local file to the remote server via scp,
+   * making both sides identical so Mutagen clears the conflict on next flush.
+   */
+  private async resolveByPushingLocal(
+    relativePath: string,
+    localAbsPath: string
+  ): Promise<void> {
+    if (!this.workspaceFolder) throw new Error('No workspace folder');
+    const { readConfig } = await import('./config');
+    const config = readConfig(this.workspaceFolder);
+    if (!config) throw new Error('Cannot read config');
+
+    const remoteFilePath = path.posix.join(config.remotePath, relativePath);
+    const scpArgs = [
+      '-o', 'StrictHostKeyChecking=accept-new',
+      '-o', 'BatchMode=yes',
+      '-P', String(config.port),
+      localAbsPath,
+      `${config.username}@${config.host}:${remoteFilePath}`
+    ];
+
+    log(`scp (push local→remote): ${scpArgs.join(' ')}`);
+    await execFileAsync('scp', scpArgs, { timeout: 15000 });
+    await this.manager!.flush();
   }
 
   private async fetchRemoteFile(
@@ -342,9 +379,9 @@ export class ConflictResolver implements vscode.Disposable {
       }
 
       if (action === 'useLocal') {
-        vscode.postMessage({ type: 'useLocal', filePath });
+        vscode.postMessage({ type: 'useLocal', filePath, localAbsPath });
       } else if (action === 'useRemote') {
-        vscode.postMessage({ type: 'useRemote', filePath });
+        vscode.postMessage({ type: 'useRemote', filePath, localAbsPath, remoteTempPath: remoteTmp });
       } else if (action === 'viewDiff') {
         vscode.postMessage({ type: 'viewDiff', filePath, localAbsPath, remoteTempPath: remoteTmp });
       }

@@ -229,23 +229,13 @@ export class MutagenManager {
   }
 
   /**
-   * Resolve a conflict in a specific file.
-   *
-   * Mutagen v0.18 resolve modes:
-   *   alpha-wins — keep the local (alpha) version
-   *   beta-wins  — keep the remote (beta) version
-   *
-   * @param filePath Relative path of the file (as reported by Mutagen)
-   * @param resolution 'local' | 'remote'
+   * Force a sync cycle so Mutagen re-evaluates file state immediately.
+   * Called after manual conflict resolution (file copy) so the conflict
+   * clears without waiting for the next poll interval.
    */
-  public async resolveConflict(filePath: string, resolution: 'local' | 'remote'): Promise<void> {
-    const mode = resolution === 'local' ? 'alpha-wins' : 'beta-wins';
-    log(`Resolving conflict: "${filePath}" → ${mode}`);
-    if (!filePath) {
-      throw new Error('Cannot resolve conflict: file path is empty. Check debug output for the raw conflict JSON from Mutagen.');
-    }
-    await this.runMutagen(['sync', 'resolve', `--mode=${mode}`, this.sessionName, filePath]);
-    log(`Conflict resolved: ${filePath}`);
+  public async flush(): Promise<void> {
+    log(`Flushing session ${this.sessionName}`);
+    await this.runMutagen(['sync', 'flush', '--skip-wait', this.sessionName]);
   }
 
   public dispose(): void {
