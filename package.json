@@ -1,0 +1,104 @@
+{
+  "name": "mutagen-sync",
+  "displayName": "Mutagen Sync",
+  "description": "Keep local and remote source files identical in realtime using Mutagen sync tool",
+  "version": "0.1.0",
+  "publisher": "mutagen-sync",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "mutagen",
+    "sync",
+    "remote",
+    "ssh",
+    "file sync"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "mutagen-sync.connect",
+        "title": "Remote Sync: Connect to Server"
+      },
+      {
+        "command": "mutagen-sync.pause",
+        "title": "Remote Sync: Pause Sync"
+      },
+      {
+        "command": "mutagen-sync.resume",
+        "title": "Remote Sync: Resume Sync"
+      },
+      {
+        "command": "mutagen-sync.resolveConflicts",
+        "title": "Remote Sync: Resolve Conflicts"
+      },
+      {
+        "command": "mutagen-sync.openConfig",
+        "title": "Remote Sync: Open Configuration"
+      },
+      {
+        "command": "mutagen-sync.disconnect",
+        "title": "Remote Sync: Disconnect and Remove Config"
+      },
+      {
+        "command": "mutagen-sync.openPanel",
+        "title": "Remote Sync: Open Status Panel"
+      },
+      {
+        "command": "mutagen-sync.showOutput",
+        "title": "Remote Sync: Show Output Log"
+      }
+    ],
+    "configuration": {
+      "title": "Mutagen Sync",
+      "properties": {
+        "mutagenSync.mutagenPath": {
+          "type": "string",
+          "default": "mutagen",
+          "description": "Path to the mutagen executable"
+        },
+        "mutagenSync.pollIntervalMs": {
+          "type": "number",
+          "default": 2000,
+          "description": "How often to poll mutagen status (milliseconds)"
+        },
+        "mutagenSync.debug": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable verbose debug logging in the 'Mutagen Sync' output channel (CLI commands, raw JSON, state transitions)"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "webpack",
+    "watch": "webpack --watch",
+    "package": "webpack --mode production --devtool hidden-source-map",
+    "compile-tests": "tsc -p . --outDir out",
+    "watch-tests": "tsc -p . -w --outDir out",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/ssh2": "^1.11.0",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "eslint": "^8.56.0",
+    "ts-loader": "^9.5.0",
+    "typescript": "^5.3.0",
+    "webpack": "^5.89.0",
+    "webpack-cli": "^5.1.0"
+  },
+  "dependencies": {
+    "ssh2": "^1.15.0"
+  }
+}
