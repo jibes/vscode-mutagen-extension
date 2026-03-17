@@ -42,14 +42,19 @@ export interface WizardResult {
 export async function runSetupWizard(
   workspaceFolder: vscode.WorkspaceFolder
 ): Promise<WizardResult | null> {
-  // Try to pre-fill from git remote before showing any input boxes
-  const gitDefaults = await detectGitRemoteDefaults(workspaceFolder.uri.fsPath);
-  if (gitDefaults) {
+  // Build pre-fill defaults: sftp.json wins over git remote (it's more direct).
+  const sftpDefaults = readSftpJsonDefaults(workspaceFolder.uri.fsPath);
+  const gitDefaults  = sftpDefaults ? null : await detectGitRemoteDefaults(workspaceFolder.uri.fsPath);
+  const defaults     = sftpDefaults ?? gitDefaults ?? undefined;
+
+  if (sftpDefaults) {
+    log(`sftp.json detected: ${sftpDefaults.username}@${sftpDefaults.host}:${sftpDefaults.port} path=${sftpDefaults.remotePath ?? '(none)'}`);
+  } else if (gitDefaults) {
     log(`Git remote detected: ${gitDefaults.username}@${gitDefaults.host}:${gitDefaults.port} path=${gitDefaults.remotePath ?? '(none)'}`);
   }
 
   // Step 1: Connection details (no password yet)
-  const connectionDetails = await collectConnectionDetails(gitDefaults ?? undefined);
+  const connectionDetails = await collectConnectionDetails(defaults);
   if (!connectionDetails) {
     return null;
   }
@@ -104,15 +109,17 @@ interface GitRemoteDefaults {
   host: string;
   port: number;
   username: string;
-  /** May be null if we can't derive a meaningful sync path from the git URL */
+  /** May be null if we can't derive a meaningful sync path from the source */
   remotePath: string | null;
+  /** Human-readable label shown in the wizard prompt */
+  source: 'sftp.json' | 'git remote';
 }
 
 async function collectConnectionDetails(
   defaults?: GitRemoteDefaults
 ): Promise<ConnectionDetails | null> {
   const gitHint = defaults
-    ? ` (detected from git remote: ${defaults.username}@${defaults.host})`
+    ? ` (pre-filled from ${defaults.source}: ${defaults.username}@${defaults.host})`
     : '';
 
   // Host
@@ -372,6 +379,69 @@ async function confirmAndWriteConfig(
 }
 
 // ---------------------------------------------------------------------------
+// sftp.json detection (SFTP extension by Natizyskunk / liximomo)
+// ---------------------------------------------------------------------------
+
+/**
+ * Reads `.vscode/sftp.json` from the workspace root and extracts the SSH
+ * connection fields that Mutagen needs.
+ *
+ * Supports both single-profile and multi-profile layouts:
+ *
+ *   Single:  { "host": "...", "port": 22, "username": "...", "remotePath": "..." }
+ *
+ *   Multi:   { "profiles": { "prod": { ... } }, "defaultProfile": "prod" }
+ *            Falls back to the first profile if defaultProfile is absent.
+ *
+ * Returns null if the file does not exist, is not valid JSON, or has no SSH
+ * fields we can use.
+ */
+function readSftpJsonDefaults(workspacePath: string): GitRemoteDefaults | null {
+  const sftpJsonPath = path.join(workspacePath, '.vscode', 'sftp.json');
+  try {
+    if (!fs.existsSync(sftpJsonPath)) return null;
+
+    const raw = fs.readFileSync(sftpJsonPath, 'utf8');
+    // sftp.json allows JS-style comments — strip them before parsing
+    const stripped = raw.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+    const json = JSON.parse(stripped) as Record<string, unknown>;
+
+    // Resolve the active profile
+    let profile: Record<string, unknown>;
+    if (json['profiles'] && typeof json['profiles'] === 'object') {
+      const profiles = json['profiles'] as Record<string, Record<string, unknown>>;
+      const defaultKey = typeof json['defaultProfile'] === 'string'
+        ? json['defaultProfile']
+        : Object.keys(profiles)[0];
+      profile = profiles[defaultKey] ?? {};
+    } else {
+      profile = json;
+    }
+
+    const host     = typeof profile['host']       === 'string' ? profile['host']       : null;
+    const username = typeof profile['username']   === 'string' ? profile['username']   : null;
+    const port     = typeof profile['port']       === 'number' ? profile['port']       : 22;
+    const remotePath = typeof profile['remotePath'] === 'string' ? profile['remotePath'] : null;
+
+    if (!host || !username) {
+      logDebug('sftp.json found but missing host or username — skipping');
+      return null;
+    }
+
+    return {
+      host,
+      port,
+      username,
+      remotePath: remotePath && remotePath.startsWith('/') ? remotePath : null,
+      source: 'sftp.json'
+    };
+  } catch (err) {
+    logDebug('readSftpJsonDefaults error (non-fatal):', err);
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Git remote detection
 // ---------------------------------------------------------------------------
 
@@ -444,7 +514,8 @@ function parseGitRemoteUrl(remoteUrl: string): GitRemoteDefaults | null {
       host,
       port: portStr ? parseInt(portStr, 10) : 22,
       username: user ?? os.userInfo().username,
-      remotePath: deriveRemotePath(urlPath ?? null)
+      remotePath: deriveRemotePath(urlPath ?? null),
+      source: 'git remote'
     };
   }
 
@@ -459,7 +530,8 @@ function parseGitRemoteUrl(remoteUrl: string): GitRemoteDefaults | null {
         host,
         port: 22,
         username: user ?? os.userInfo().username,
-        remotePath: deriveRemotePath(urlPath.startsWith('/') ? urlPath : null)
+        remotePath: deriveRemotePath(urlPath.startsWith('/') ? urlPath : null),
+        source: 'git remote'
       };
     }
   }
