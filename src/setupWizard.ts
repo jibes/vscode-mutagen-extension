@@ -510,6 +510,10 @@ function parseGitRemoteUrl(remoteUrl: string): GitRemoteDefaults | null {
   );
   if (sshProtoMatch) {
     const [, user, host, portStr, urlPath] = sshProtoMatch;
+    if (isPublicGitHost(host)) {
+      logDebug('Git remote is a public git host, skipping:', host);
+      return null;
+    }
     return {
       host,
       port: portStr ? parseInt(portStr, 10) : 22,
@@ -526,6 +530,10 @@ function parseGitRemoteUrl(remoteUrl: string): GitRemoteDefaults | null {
     const scpMatch = remoteUrl.match(/^(?:([^@]+)@)?([^:]+):(.+)$/);
     if (scpMatch) {
       const [, user, host, urlPath] = scpMatch;
+      if (isPublicGitHost(host)) {
+        logDebug('Git remote is a public git host, skipping:', host);
+        return null;
+      }
       return {
         host,
         port: 22,
@@ -539,6 +547,23 @@ function parseGitRemoteUrl(remoteUrl: string): GitRemoteDefaults | null {
   // HTTPS, git://, file:// — not SSH
   logDebug('Git remote is not an SSH URL, skipping:', remoteUrl);
   return null;
+}
+
+/** Public git hosting services — never useful as Mutagen sync targets */
+const PUBLIC_GIT_HOSTS = new Set([
+  'github.com',
+  'gitlab.com',
+  'bitbucket.org',
+  'dev.azure.com',
+  'ssh.dev.azure.com',
+  'vs-ssh.visualstudio.com',
+  'codeberg.org',
+  'sourceforge.net',
+]);
+
+function isPublicGitHost(host: string): boolean {
+  const h = host.toLowerCase();
+  return PUBLIC_GIT_HOSTS.has(h) || h.endsWith('.github.com') || h.endsWith('.gitlab.com');
 }
 
 /**

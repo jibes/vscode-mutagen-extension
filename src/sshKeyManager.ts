@@ -108,15 +108,15 @@ export async function copyPublicKeyToServer(params: SshConnectionParams): Promis
 }
 
 /**
- * Test whether keyless (public-key) SSH authentication works without throwing.
- * Returns true if the key exists locally and is accepted by the server.
+ * Test whether keyless SSH authentication works, without throwing.
+ *
+ * Uses the system `ssh` binary with BatchMode=yes so that it respects
+ * ssh-agent, ~/.ssh/config, and all key types (id_ed25519, id_rsa, etc.)
+ * — not just the one key file we manage.
  */
 export async function tryKeylessConnection(
   params: Omit<SshConnectionParams, 'password'>
 ): Promise<boolean> {
-  if (!fs.existsSync(PRIVATE_KEY_PATH)) {
-    return false;
-  }
   try {
     await verifyKeylessConnection(params);
     return true;
@@ -126,53 +126,33 @@ export async function tryKeylessConnection(
 }
 
 /**
- * Verify that keyless (public-key) SSH authentication works.
+ * Verify that keyless SSH authentication works using the system ssh binary.
+ *
+ * BatchMode=yes prevents ssh from asking for a passphrase/password, so the
+ * call fails immediately if no working key is available.  This respects
+ * ssh-agent, ~/.ssh/config, and all key types — not just id_ed25519.
  */
-export async function verifyKeylessConnection(params: Omit<SshConnectionParams, 'password'>): Promise<void> {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { Client } = require('ssh2') as typeof import('ssh2');
+export async function verifyKeylessConnection(
+  params: Omit<SshConnectionParams, 'password'>
+): Promise<void> {
+  const args = [
+    '-o', 'BatchMode=yes',
+    '-o', 'ConnectTimeout=8',
+    '-o', 'StrictHostKeyChecking=accept-new',
+    '-p', String(params.port),
+    `${params.username}@${params.host}`,
+    'echo ok'
+  ];
 
-  const privateKey = fs.readFileSync(PRIVATE_KEY_PATH);
-
-  return new Promise<void>((resolve, reject) => {
-    const conn = new Client();
-
-    conn.on('ready', () => {
-      conn.exec('echo ok', (err, stream) => {
-        if (err) {
-          conn.end();
-          return reject(new Error(`Verification command failed: ${err.message}`));
-        }
-
-        let stdout = '';
-        stream.on('data', (data: Buffer) => {
-          stdout += data.toString();
-        });
-
-        stream.on('close', (code: number) => {
-          conn.end();
-          if (code !== 0 || !stdout.trim().startsWith('ok')) {
-            reject(new Error('Keyless SSH verification failed'));
-          } else {
-            resolve();
-          }
-        });
-      });
-    });
-
-    conn.on('error', (err: Error) => {
-      reject(new Error(`Keyless SSH verification failed: ${err.message}`));
-    });
-
-    conn.connect({
-      host: params.host,
-      port: params.port,
-      username: params.username,
-      privateKey,
-      readyTimeout: 15000,
-      keepaliveInterval: 0
-    });
-  });
+  try {
+    const { stdout } = await execFileAsync('ssh', args, { timeout: 12000 });
+    if (!stdout.trim().startsWith('ok')) {
+      throw new Error('Unexpected output from ssh verification');
+    }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`Keyless SSH verification failed: ${msg}`);
+  }
 }
 
 /**
