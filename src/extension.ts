@@ -49,6 +49,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('mutagen-sync.connect', () => cmdConnect(context)),
     vscode.commands.registerCommand('mutagen-sync.pause', cmdPause),
     vscode.commands.registerCommand('mutagen-sync.resume', cmdResume),
+    vscode.commands.registerCommand('mutagen-sync.reconnect', cmdReconnect),
     vscode.commands.registerCommand('mutagen-sync.resolveConflicts', cmdResolveConflicts),
     vscode.commands.registerCommand('mutagen-sync.openConfig', cmdOpenConfig),
     vscode.commands.registerCommand('mutagen-sync.disconnect', cmdDisconnect),
@@ -356,6 +357,19 @@ async function cmdOpenConfig(): Promise<void> {
   }
 }
 
+async function cmdReconnect(): Promise<void> {
+  const folder = getActiveWorkspaceFolder();
+  if (!folder) {
+    await vscode.window.showErrorMessage('Mutagen Sync: No workspace folder open.');
+    return;
+  }
+  if (!configExists(folder)) {
+    await vscode.window.showWarningMessage('Mutagen Sync: No configuration found — run Connect first.');
+    return;
+  }
+  await startSession(folder);
+}
+
 async function cmdDisconnect(): Promise<void> {
   const folder = getActiveWorkspaceFolder();
   if (!folder) {
@@ -363,14 +377,15 @@ async function cmdDisconnect(): Promise<void> {
     return;
   }
 
+  // Modal X / Escape acts as cancel — no explicit Cancel button needed
   const confirm = await vscode.window.showWarningMessage(
-    `Mutagen Sync: Terminate sync session for "${folder.name}" and remove config?`,
+    `Mutagen Sync: Terminate sync session for "${folder.name}"?`,
     { modal: true },
-    'Terminate & Remove',
-    'Cancel'
+    'Terminate & Remove Config',
+    'Terminate (Keep Config)'
   );
 
-  if (confirm !== 'Terminate & Remove') return;
+  if (!confirm) return;
 
   const key = folder.uri.toString();
   const session = sessions.get(key);
@@ -381,11 +396,17 @@ async function cmdDisconnect(): Promise<void> {
     sessions.delete(key);
   }
 
-  removeConfig(folder);
-  statusBar.setNoConfig();
-  await vscode.window.showInformationMessage(
-    `Mutagen Sync: Session terminated and config removed for "${folder.name}".`
-  );
+  if (confirm === 'Terminate & Remove Config') {
+    removeConfig(folder);
+    statusBar.setNoConfig();
+    await vscode.window.showInformationMessage(
+      `Mutagen Sync: Session terminated and config removed for "${folder.name}".`
+    );
+  } else {
+    await vscode.window.showInformationMessage(
+      `Mutagen Sync: Session terminated for "${folder.name}". Config kept — click the status bar to reconnect.`
+    );
+  }
 }
 
 async function cmdOpenPanel(): Promise<void> {
@@ -444,7 +465,7 @@ async function cmdOpenPanel(): Promise<void> {
   const actions: string[] = [];
   if (status.state === 'paused') actions.push('Resume');
   if (status.state === 'watching' || status.state === 'syncing') actions.push('Pause');
-  actions.push('Open Config', 'Disconnect');
+  actions.push('Reconnect', 'Open Config', 'Disconnect');
 
   const choice = await vscode.window.showInformationMessage(
     `Mutagen Sync [${folder.name}]: ${stateLabel[status.state] ?? status.description}`,
@@ -457,6 +478,9 @@ async function cmdOpenPanel(): Promise<void> {
       break;
     case 'Pause':
       await cmdPause();
+      break;
+    case 'Reconnect':
+      await cmdReconnect();
       break;
     case 'Open Config':
       await cmdOpenConfig();

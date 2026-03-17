@@ -44,8 +44,12 @@
         "title": "Remote Sync: Open Configuration"
       },
       {
+        "command": "mutagen-sync.reconnect",
+        "title": "Remote Sync: Reconnect"
+      },
+      {
         "command": "mutagen-sync.disconnect",
-        "title": "Remote Sync: Disconnect and Remove Config"
+        "title": "Remote Sync: Disconnect"
       },
       {
         "command": "mutagen-sync.openPanel",

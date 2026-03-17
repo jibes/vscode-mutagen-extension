@@ -81,9 +81,10 @@ Edit `ignores` freely — remove patterns you don't need, add your own. There ar
 | **Remote Sync: Connect to Server** | Run the setup wizard for the current workspace |
 | **Remote Sync: Pause Sync** | Pause the active session |
 | **Remote Sync: Resume Sync** | Resume a paused session |
+| **Remote Sync: Reconnect** | Restart the sync session without changing config |
 | **Remote Sync: Resolve Conflicts** | Open the conflict resolution panel |
 | **Remote Sync: Open Configuration** | Open `.vscode/remote-sync.json` |
-| **Remote Sync: Disconnect and Remove Config** | Terminate the session and delete the config |
+| **Remote Sync: Disconnect** | Terminate the session (offers keep or remove config) |
 | **Remote Sync: Show Output Log** | Open the "Mutagen Sync" output channel |
 
 ---
