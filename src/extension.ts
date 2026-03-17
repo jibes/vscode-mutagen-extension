@@ -281,6 +281,10 @@ async function cmdConnect(context: vscode.ExtensionContext): Promise<void> {
     return; // cancelled
   }
 
+  // Switch status bar command immediately so clicking it shows the
+  // panel/disconnect options without requiring a reload.
+  statusBar.restoreCommand();
+
   await startSession(folder);
 
   const openConfig = await vscode.window.showInformationMessage(
