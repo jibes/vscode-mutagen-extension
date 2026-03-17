@@ -510,15 +510,17 @@ function parseGitRemoteUrl(remoteUrl: string): GitRemoteDefaults | null {
   );
   if (sshProtoMatch) {
     const [, user, host, portStr, urlPath] = sshProtoMatch;
-    if (isPublicGitHost(host)) {
-      logDebug('Git remote is a public git host, skipping:', host);
+    // ssh:// URLs always produce an absolute path (starts with /), or no path.
+    // No path → bare repo host, nothing useful to pre-fill.
+    if (!urlPath || !urlPath.startsWith('/')) {
+      logDebug('Git remote ssh:// URL has no absolute path — bare repo host, skipping');
       return null;
     }
     return {
       host,
       port: portStr ? parseInt(portStr, 10) : 22,
       username: user ?? os.userInfo().username,
-      remotePath: deriveRemotePath(urlPath ?? null),
+      remotePath: deriveRemotePath(urlPath),
       source: 'git remote'
     };
   }
@@ -530,15 +532,20 @@ function parseGitRemoteUrl(remoteUrl: string): GitRemoteDefaults | null {
     const scpMatch = remoteUrl.match(/^(?:([^@]+)@)?([^:]+):(.+)$/);
     if (scpMatch) {
       const [, user, host, urlPath] = scpMatch;
-      if (isPublicGitHost(host)) {
-        logDebug('Git remote is a public git host, skipping:', host);
+      // A relative path (e.g. "user/repo.git", "myproject.git") means this is
+      // a bare-repo git host — GitHub, GitLab, Gitea, any hosted service.
+      // These are never valid Mutagen sync targets, so skip the whole remote.
+      // An absolute path (e.g. "/var/www/project") means a real working
+      // directory on an own server — that's exactly what we want to sync.
+      if (!urlPath.startsWith('/')) {
+        logDebug('Git remote SCP path is relative — bare repo host, skipping:', urlPath);
         return null;
       }
       return {
         host,
         port: 22,
         username: user ?? os.userInfo().username,
-        remotePath: deriveRemotePath(urlPath.startsWith('/') ? urlPath : null),
+        remotePath: deriveRemotePath(urlPath),
         source: 'git remote'
       };
     }
@@ -547,23 +554,6 @@ function parseGitRemoteUrl(remoteUrl: string): GitRemoteDefaults | null {
   // HTTPS, git://, file:// — not SSH
   logDebug('Git remote is not an SSH URL, skipping:', remoteUrl);
   return null;
-}
-
-/** Public git hosting services — never useful as Mutagen sync targets */
-const PUBLIC_GIT_HOSTS = new Set([
-  'github.com',
-  'gitlab.com',
-  'bitbucket.org',
-  'dev.azure.com',
-  'ssh.dev.azure.com',
-  'vs-ssh.visualstudio.com',
-  'codeberg.org',
-  'sourceforge.net',
-]);
-
-function isPublicGitHost(host: string): boolean {
-  const h = host.toLowerCase();
-  return PUBLIC_GIT_HOSTS.has(h) || h.endsWith('.github.com') || h.endsWith('.gitlab.com');
 }
 
 /**
