@@ -367,6 +367,18 @@ async function cmdReconnect(): Promise<void> {
     await vscode.window.showWarningMessage('Mutagen Sync: No configuration found — run Connect first.');
     return;
   }
+
+  // Terminate (not just pause) the existing daemon session so the new one is
+  // created from scratch with the current config (including any ignore changes).
+  const key = folder.uri.toString();
+  const session = sessions.get(key);
+  if (session) {
+    sessions.delete(key);
+    try { await session.manager.terminate(); } catch { /* best effort */ }
+    session.disposable.dispose();
+    session.manager.dispose();
+  }
+
   await startSession(folder);
 }
 

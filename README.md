@@ -64,6 +64,23 @@ All per-project settings live in `.vscode/remote-sync.json`:
 
 Edit `ignores` freely — remove patterns you don't need, add your own. There are no hidden hardcoded ignores.
 
+> **After editing ignores, click the status bar → Reconnect** (or Disconnect + Connect). Ignore patterns are passed as flags when the Mutagen session is created and are not reloaded while the session is running.
+
+#### Ignore pattern syntax
+
+Mutagen uses **gitignore-style** patterns:
+
+| Pattern | What it matches |
+|---|---|
+| `node_modules` | Any file or directory named `node_modules` anywhere in the tree |
+| `.excluded_file` | Any file named `.excluded_file` anywhere in the tree |
+| `*.log` | Any file ending in `.log` |
+| `logs/` | Any directory named `logs` (trailing `/` = directories only) |
+| `src/*.test.ts` | Files matching `*.test.ts` directly inside any `src/` directory |
+| `**/temp` | Any file or directory named `temp` at any depth (explicit — same as without `**`) |
+
+Patterns **without a `/`** (other than a trailing one) match against the **filename only**, anywhere in the tree. Patterns **with a `/`** are matched against the full relative path from the sync root.
+
 ### VS Code Settings
 
 | Setting | Default | Description |
