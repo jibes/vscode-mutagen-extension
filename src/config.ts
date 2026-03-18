@@ -8,7 +8,7 @@ export interface RemoteSyncConfig {
   username: string;
   remotePath: string;
   /** All ignored paths — written into the config so they can be removed. No implicit ignores. */
-  ignores: string[];
+  ignore: string[];
 }
 
 const CONFIG_FILENAME = 'remote-sync.json';
@@ -30,7 +30,7 @@ export function readConfig(workspaceFolder: vscode.WorkspaceFolder): RemoteSyncC
 
   try {
     const raw = fs.readFileSync(configPath, 'utf8');
-    const parsed = JSON.parse(raw) as Partial<RemoteSyncConfig> & { additionalIgnores?: string[] };
+    const parsed = JSON.parse(raw) as Partial<RemoteSyncConfig> & { ignores?: string[]; additionalIgnores?: string[] };
 
     // Validate required fields
     if (!parsed.host || !parsed.username || !parsed.remotePath) {
@@ -40,8 +40,9 @@ export function readConfig(workspaceFolder: vscode.WorkspaceFolder): RemoteSyncC
       return null;
     }
 
-    // Support old configs that used "additionalIgnores" — migrate transparently
-    const ignores =
+    // Support old configs that used "ignores" or "additionalIgnores" — migrate transparently
+    const ignore =
+      parsed.ignore ??
       parsed.ignores ??
       (parsed.additionalIgnores ? [...DEFAULT_IGNORES, ...parsed.additionalIgnores] : [...DEFAULT_IGNORES]);
 
@@ -50,7 +51,7 @@ export function readConfig(workspaceFolder: vscode.WorkspaceFolder): RemoteSyncC
       port: parsed.port ?? 22,
       username: parsed.username,
       remotePath: parsed.remotePath,
-      ignores
+      ignore
     };
   } catch (err) {
     vscode.window.showErrorMessage(
@@ -94,9 +95,9 @@ export function deriveSessionName(workspaceFolder: vscode.WorkspaceFolder): stri
 }
 
 /**
- * Default ignores written into the config on first setup.
+ * Default ignore patterns written into the config on first setup.
  * Users can freely remove or add entries in .vscode/remote-sync.json.
- * No ignores are applied implicitly — the config is the single source of truth.
+ * No patterns are applied implicitly — the config is the single source of truth.
  */
 export const DEFAULT_IGNORES: readonly string[] = [
   '.git',

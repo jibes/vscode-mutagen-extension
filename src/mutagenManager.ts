@@ -249,9 +249,9 @@ export class MutagenManager {
 
   private async createSession(): Promise<void> {
     const localPath = this.workspaceFolder.uri.fsPath;
-    const { host, port, username, remotePath, ignores } = this.config;
+    const { host, port, username, remotePath, ignore } = this.config;
 
-    const ignoreArgs = ignores.flatMap(ig => [`--ignore=${ig}`]);
+    const ignoreArgs = ignore.flatMap(ig => [`--ignore=${ig}`]);
 
     // Mutagen uses scp-style URLs for default port, ssh:// for custom ports
     const remoteEndpoint =

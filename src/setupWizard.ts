@@ -83,7 +83,7 @@ export async function runSetupWizard(
     port,
     username,
     remotePath,
-    ignores
+    ignore: ignores
   };
 
   const confirmed = await confirmAndWriteConfig(workspaceFolder, config);
@@ -352,7 +352,7 @@ async function confirmAndWriteConfig(
   config: RemoteSyncConfig
 ): Promise<boolean> {
   const ignoresSummary =
-    config.ignores.length > 0 ? config.ignores.join(', ') : '(none)';
+    config.ignore.length > 0 ? config.ignore.join(', ') : '(none)';
 
   const summary = [
     `Host:        ${config.host}:${config.port}`,
