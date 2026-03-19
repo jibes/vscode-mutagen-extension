@@ -33,6 +33,8 @@ export class ConflictResolver implements vscode.Disposable {
   private readonly extensionUri: vscode.Uri;
   private manager: MutagenManager | null = null;
   private workspaceFolder: vscode.WorkspaceFolder | null = null;
+  /** Temp files fetched from the remote for diff/resolution — cleaned up on panel close. */
+  private tempFiles: string[] = [];
 
   constructor(extensionUri: vscode.Uri) {
     this.extensionUri = extensionUri;
@@ -53,6 +55,9 @@ export class ConflictResolver implements vscode.Disposable {
 
     log(`Opening conflict panel: ${status.conflicts.length} conflict(s)`);
     status.conflicts.forEach(c => log(`  conflict path: "${c.path}"`));
+
+    // Clean up any temp files from a previous open before re-enriching
+    this.cleanupTempFiles();
 
     const enriched = await this.enrichConflicts(status.conflicts, workspaceFolder);
 
@@ -75,11 +80,29 @@ export class ConflictResolver implements vscode.Disposable {
       await this.handleMessage(msg);
     });
 
-    this.panel.onDidDispose(() => { this.panel = null; });
+    this.panel.onDidDispose(() => {
+      this.panel = null;
+      // Clean up all temp remote files when the panel is closed
+      this.cleanupTempFiles();
+    });
+  }
+
+  /**
+   * Close the conflict panel if it is tied to the given manager instance.
+   * Called by extension.ts when a session is torn down to prevent the panel
+   * from holding a reference to a disposed manager.
+   */
+  public clearSession(manager: MutagenManager): void {
+    if (this.manager === manager) {
+      this.panel?.dispose(); // triggers onDidDispose → this.panel = null, temp cleanup
+      this.manager = null;
+      this.workspaceFolder = null;
+    }
   }
 
   public dispose(): void {
     this.panel?.dispose();
+    this.cleanupTempFiles();
   }
 
   // -------------------------------------------------------------------------
@@ -112,6 +135,8 @@ export class ConflictResolver implements vscode.Disposable {
           }
           log(`Overwriting local "${msg.localAbsPath}" with remote temp "${msg.remoteTempPath}"`);
           fs.copyFileSync(msg.remoteTempPath, msg.localAbsPath);
+          // Clean up the temp file now that it has been consumed
+          this.cleanupTempFile(msg.remoteTempPath);
           await this.manager.flush();
           await this.sendMessage({ type: 'resolveOk', filePath: msg.filePath });
           void vscode.window.showInformationMessage(
@@ -151,6 +176,8 @@ export class ConflictResolver implements vscode.Disposable {
 
         case 'refresh': {
           if (!this.workspaceFolder) return;
+          // Clean up stale temp files before re-fetching
+          this.cleanupTempFiles();
           const status = this.manager.getStatus();
           const enriched = await this.enrichConflicts(status.conflicts, this.workspaceFolder);
           await this.sendMessage({ type: 'updateConflicts', html: this.buildConflictList(enriched) });
@@ -227,6 +254,7 @@ export class ConflictResolver implements vscode.Disposable {
     localAbsPath: string
   ): Promise<void> {
     if (!this.workspaceFolder) throw new Error('No workspace folder');
+    if (!this.manager) throw new Error('No manager');
     const { readConfig } = await import('./config');
     const config = readConfig(this.workspaceFolder);
     if (!config) throw new Error('Cannot read config');
@@ -242,7 +270,7 @@ export class ConflictResolver implements vscode.Disposable {
 
     log(`scp (push local→remote): ${scpArgs.join(' ')}`);
     await execFileAsync('scp', scpArgs, { timeout: 15000 });
-    await this.manager!.flush();
+    await this.manager.flush();
   }
 
   private async fetchRemoteFile(
@@ -269,7 +297,35 @@ export class ConflictResolver implements vscode.Disposable {
 
     logDebug(`scp ${scpArgs.join(' ')}`);
     await execFileAsync('scp', scpArgs, { timeout: 15000 });
+
+    // Track so we can clean it up when the panel closes or on next refresh
+    this.tempFiles.push(tempFile);
     return tempFile;
+  }
+
+  // -------------------------------------------------------------------------
+  // Temp file cleanup
+  // -------------------------------------------------------------------------
+
+  private cleanupTempFiles(): void {
+    for (const f of this.tempFiles) {
+      try {
+        if (fs.existsSync(f)) fs.unlinkSync(f);
+      } catch {
+        // Best effort
+      }
+    }
+    this.tempFiles = [];
+  }
+
+  private cleanupTempFile(filePath: string): void {
+    const idx = this.tempFiles.indexOf(filePath);
+    if (idx >= 0) this.tempFiles.splice(idx, 1);
+    try {
+      if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    } catch {
+      // Best effort
+    }
   }
 
   // -------------------------------------------------------------------------
