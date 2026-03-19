@@ -5,7 +5,7 @@ interface StatusBarConfig {
   icon: string;
   text: string;
   tooltip: string;
-  color?: string;
+  color?: vscode.ThemeColor;
 }
 
 function getStatusBarConfig(status: SyncStatus, remoteName?: string): StatusBarConfig {
@@ -33,7 +33,7 @@ function getStatusBarConfig(status: SyncStatus, remoteName?: string): StatusBarC
         tooltip:
           `${status.conflicts.length} file(s) have conflicts. Click to resolve.\n` +
           status.conflicts.map(c => `  • ${c.path}`).join('\n'),
-        color: new vscode.ThemeColor('statusBarItem.warningBackground') as unknown as string
+        color: new vscode.ThemeColor('statusBarItem.warningBackground')
       };
 
     case 'disconnected':
@@ -41,7 +41,7 @@ function getStatusBarConfig(status: SyncStatus, remoteName?: string): StatusBarC
         icon: '$(error)',
         text: `$(error) Mutagen: ${prefix}Disconnected`,
         tooltip: 'Mutagen: SSH connection lost. Check your network and server.',
-        color: new vscode.ThemeColor('statusBarItem.errorBackground') as unknown as string
+        color: new vscode.ThemeColor('statusBarItem.errorBackground')
       };
 
     case 'paused':
@@ -93,8 +93,7 @@ export class StatusBarManager implements vscode.Disposable {
     this.item.tooltip = config.tooltip;
 
     if (config.color) {
-      // backgroundColor requires ThemeColor but the typing accepts it
-      this.item.backgroundColor = config.color as unknown as vscode.ThemeColor;
+      this.item.backgroundColor = config.color;
     } else {
       this.item.backgroundColor = undefined;
     }

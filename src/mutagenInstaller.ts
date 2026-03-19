@@ -180,7 +180,7 @@ async function downloadAndExtractAll(
 /** Fetch JSON from a URL, following redirects. */
 async function fetchJson(url: string): Promise<unknown> {
   return new Promise((resolve, reject) => {
-    const doGet = (target: string) => {
+    const doGet = (target: string, redirectsLeft = 5) => {
       const parsed = new URL(target);
       https
         .get(
@@ -201,8 +201,9 @@ async function fetchJson(url: string): Promise<unknown> {
             ) {
               const location = res.headers.location;
               if (!location) return reject(new Error('Redirect with no Location header'));
+              if (redirectsLeft <= 0) return reject(new Error(`Too many redirects fetching ${url}`));
               res.resume();
-              return doGet(location);
+              return doGet(location, redirectsLeft - 1);
             }
             if (res.statusCode !== 200) {
               res.resume();
@@ -230,7 +231,7 @@ async function fetchJson(url: string): Promise<unknown> {
 /** Download a URL to a local file, following redirects. */
 async function downloadFile(url: string, destPath: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    const doGet = (target: string) => {
+    const doGet = (target: string, redirectsLeft = 5) => {
       const parsed = new URL(target);
       https
         .get(
@@ -248,8 +249,9 @@ async function downloadFile(url: string, destPath: string): Promise<void> {
             ) {
               const location = res.headers.location;
               if (!location) return reject(new Error('Redirect with no Location header'));
+              if (redirectsLeft <= 0) return reject(new Error(`Too many redirects downloading ${url}`));
               res.resume();
-              return doGet(location);
+              return doGet(location, redirectsLeft - 1);
             }
             if (res.statusCode !== 200) {
               res.resume();

@@ -114,6 +114,7 @@ export class MutagenManager {
   /** Path to the mutagen binary (managed or user-configured). */
   private readonly managedBinaryPath: string | undefined;
   private pollTimer: ReturnType<typeof setTimeout> | null = null;
+  private disposed = false;
   private currentStatus: SyncStatus;
   private readonly pollIntervalMs: number;
 
@@ -239,6 +240,7 @@ export class MutagenManager {
   }
 
   public dispose(): void {
+    this.disposed = true;
     this.stopPolling();
     this.onStatusChanged.dispose();
   }
@@ -369,7 +371,10 @@ export class MutagenManager {
     this.stopPolling();
     const poll = async () => {
       await this.pollStatus();
-      this.pollTimer = setTimeout(poll, this.pollIntervalMs);
+      // Guard: don't reschedule if dispose() was called while pollStatus() was running
+      if (!this.disposed) {
+        this.pollTimer = setTimeout(poll, this.pollIntervalMs);
+      }
     };
     // Start immediately
     void poll();
