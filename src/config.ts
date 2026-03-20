@@ -32,6 +32,14 @@ export function readConfig(workspaceFolder: vscode.WorkspaceFolder): RemoteSyncC
     const raw = fs.readFileSync(configPath, 'utf8');
     const parsed = JSON.parse(raw) as Partial<RemoteSyncConfig> & { ignores?: string[]; additionalIgnores?: string[] };
 
+    // Guard against non-object JSON (null, string, number, array, etc.)
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      vscode.window.showErrorMessage(
+        `Mutagen Sync: Invalid config in ${configPath}. Expected a JSON object.`
+      );
+      return null;
+    }
+
     // Validate required fields
     if (!parsed.host || !parsed.username || !parsed.remotePath) {
       vscode.window.showErrorMessage(
@@ -48,7 +56,7 @@ export function readConfig(workspaceFolder: vscode.WorkspaceFolder): RemoteSyncC
 
     return {
       host: parsed.host,
-      port: parsed.port ?? 22,
+      port: (typeof parsed.port === 'number' && Number.isInteger(parsed.port) && parsed.port > 0 && parsed.port <= 65535) ? parsed.port : 22,
       username: parsed.username,
       remotePath: parsed.remotePath,
       ignore

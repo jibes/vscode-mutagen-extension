@@ -189,9 +189,11 @@ async function collectConnectionDetails(
 /**
  * Ensure the local machine can connect to the server with key-based auth.
  *
- * 1. Try the existing key (if any) → if it works, we are done (no password asked).
- * 2. If that fails, ask for the password once, generate a key if absent,
- *    copy the public key to the server, and verify keyless auth works.
+ * 1. Try keyless SSH (BatchMode=yes, no explicit key). This covers ssh-agent,
+ *    ~/.ssh/config, and all default key types (ed25519, ECDSA, RSA, …).
+ *    If it works, we are done — no password asked and no new key generated.
+ * 2. If that fails, ask for the password once, generate an ed25519 key if
+ *    absent, copy the public key to the server, and verify keyless auth works.
  *
  * Returns true on success, false if the user cancelled or setup failed.
  */
@@ -200,7 +202,7 @@ async function ensureSshAccess(params: {
   port: number;
   username: string;
 }): Promise<boolean> {
-  // --- Try existing key silently ---
+  // --- Try keyless auth silently (covers ssh-agent + all default keys) ---
   const keyAlreadyWorks = await vscode.window.withProgress(
     {
       location: vscode.ProgressLocation.Notification,
@@ -208,20 +210,15 @@ async function ensureSshAccess(params: {
       cancellable: false
     },
     async progress => {
-      const privateKeyPath = path.join(os.homedir(), '.ssh', 'id_ed25519');
-      const keyExists = fs.existsSync(privateKeyPath);
-
-      if (keyExists) {
-        progress.report({ message: `Testing existing key for ${params.username}@${params.host}...` });
-        const ok = await tryKeylessConnection(params);
-        if (ok) {
-          progress.report({ message: 'SSH key already authorized — no password needed.' });
-          await sleep(800);
-          return true;
-        }
-        progress.report({ message: 'Existing key not accepted — password required.' });
-        await sleep(600);
+      progress.report({ message: `Testing SSH access to ${params.username}@${params.host}...` });
+      const ok = await tryKeylessConnection(params);
+      if (ok) {
+        progress.report({ message: 'SSH access confirmed — no password needed.' });
+        await sleep(800);
+        return true;
       }
+      progress.report({ message: 'No working key found — password required.' });
+      await sleep(600);
       return false;
     }
   );

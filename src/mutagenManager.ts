@@ -104,6 +104,30 @@ interface MutagenSession {
 }
 
 // ---------------------------------------------------------------------------
+// Module-level helper: list all sessions without a manager instance.
+// Used by extension.ts once during session setup for name-collision detection.
+// ---------------------------------------------------------------------------
+
+export async function listAllMutagenSessions(
+  mutagenPath: string
+): Promise<Array<{ name?: string; alpha?: { path?: string } }>> {
+  try {
+    const { stdout } = await execFileAsync(
+      mutagenPath,
+      ['sync', 'list', '--template', '{{json .}}'],
+      { maxBuffer: 10 * 1024 * 1024 }
+    );
+    const trimmed = stdout.trim();
+    if (!trimmed || trimmed === 'null') return [];
+    const parsed = JSON.parse(trimmed);
+    if (!Array.isArray(parsed)) return [];
+    return parsed as Array<{ name?: string; alpha?: { path?: string } }>;
+  } catch {
+    return [];
+  }
+}
+
+// ---------------------------------------------------------------------------
 // MutagenManager
 // ---------------------------------------------------------------------------
 
@@ -114,8 +138,8 @@ export class MutagenManager {
   /** Path to the mutagen binary (managed or user-configured). */
   private readonly managedBinaryPath: string | undefined;
   private pollTimer: ReturnType<typeof setTimeout> | null = null;
+  private disposed = false;
   private currentStatus: SyncStatus;
-  private readonly pollIntervalMs: number;
 
   /** Fired whenever the sync status changes */
   public readonly onStatusChanged: vscode.EventEmitter<SyncStatus> =
@@ -129,18 +153,21 @@ export class MutagenManager {
    *                           user hasn't overridden mutagenSync.mutagenPath in
    *                           settings, this path is used in preference to
    *                           searching PATH.
+   * @param sessionName      Explicit session name. If omitted, derived from the
+   *                         workspace folder name. Callers should pass a
+   *                         persisted name (from workspaceState) to avoid
+   *                         collisions between folders with similar names.
    */
   constructor(
     workspaceFolder: vscode.WorkspaceFolder,
     config: RemoteSyncConfig,
-    managedBinaryPath?: string
+    managedBinaryPath?: string,
+    sessionName?: string
   ) {
     this.workspaceFolder = workspaceFolder;
     this.config = config;
     this.managedBinaryPath = managedBinaryPath;
-    this.sessionName = deriveSessionName(workspaceFolder);
-    this.pollIntervalMs =
-      vscode.workspace.getConfiguration('mutagenSync').get<number>('pollIntervalMs') ?? 2000;
+    this.sessionName = sessionName ?? deriveSessionName(workspaceFolder);
     this.currentStatus = {
       state: 'unknown',
       sessionName: this.sessionName,
@@ -239,6 +266,7 @@ export class MutagenManager {
   }
 
   public dispose(): void {
+    this.disposed = true;
     this.stopPolling();
     this.onStatusChanged.dispose();
   }
@@ -292,8 +320,7 @@ export class MutagenManager {
    */
   private async cleanupStaleSessions(): Promise<void> {
     try {
-      const all = await this.listAllSessions();
-      const matching = all.filter(s => s.name === this.sessionName);
+      const matching = await this.listSessionsByName(this.sessionName);
       logDebug(`Sessions with name "${this.sessionName}": ${matching.length}`);
 
       if (matching.length <= 1) return;
@@ -317,22 +344,14 @@ export class MutagenManager {
 
   /**
    * Returns the session state if a Mutagen session exists for this workspace,
-   * matched by session name or local (alpha) path.
+   * matched by session name.
    */
   public async findExistingSession(): Promise<MutagenSession | null> {
     try {
-      const all = await this.listAllSessions();
-      const localPath = this.workspaceFolder.uri.fsPath;
-
-      // Prefer a non-paused match by name; fall back to path match
-      const byName = all.filter(s => s.name === this.sessionName);
-      if (byName.length > 0) {
-        // Prefer live session over paused
-        return byName.find(s => !s.paused) ?? byName[0];
-      }
-
-      const byPath = all.find(s => s.alpha?.path === localPath);
-      return byPath ?? null;
+      const sessions = await this.listSessionsByName(this.sessionName);
+      if (sessions.length === 0) return null;
+      // Prefer live session over paused
+      return sessions.find(s => !s.paused) ?? sessions[0];
     } catch (e) {
       logDebug('findExistingSession error:', e);
       return null;
@@ -340,20 +359,21 @@ export class MutagenManager {
   }
 
   /**
-   * Fetch and parse all Mutagen sync sessions as a flat array.
+   * Fetch and parse Mutagen sync sessions matching a given name.
+   * Passing a name filter is more efficient than listing all sessions
+   * when the user has many unrelated Mutagen sessions.
    */
-  private async listAllSessions(): Promise<MutagenSession[]> {
+  private async listSessionsByName(name: string): Promise<MutagenSession[]> {
     const { stdout } = await this.runMutagen(
-      ['sync', 'list', '--template', '{{json .}}'],
+      ['sync', 'list', '--template', '{{json .}}', name],
       true /* silent on error */
     );
     const trimmed = stdout.trim();
     if (!trimmed || trimmed === 'null') {
       return [];
     }
-    logDebug('listAllSessions raw:', trimmed.length > 2000 ? trimmed.slice(0, 2000) + '…' : trimmed);
+    logDebug('listSessionsByName raw:', trimmed.length > 2000 ? trimmed.slice(0, 2000) + '…' : trimmed);
     const parsed = JSON.parse(trimmed);
-    // Mutagen returns a JSON array; guard against unexpected shapes
     if (!Array.isArray(parsed)) {
       log('WARNING: Expected JSON array from mutagen list, got:', typeof parsed);
       return [];
@@ -365,11 +385,18 @@ export class MutagenManager {
   // Polling
   // -------------------------------------------------------------------------
 
+  private get pollIntervalMs(): number {
+    return vscode.workspace.getConfiguration('mutagenSync').get<number>('pollIntervalMs') ?? 2000;
+  }
+
   private startPolling(): void {
     this.stopPolling();
     const poll = async () => {
       await this.pollStatus();
-      this.pollTimer = setTimeout(poll, this.pollIntervalMs);
+      // Guard: don't reschedule if dispose() was called while pollStatus() was running
+      if (!this.disposed) {
+        this.pollTimer = setTimeout(poll, this.pollIntervalMs);
+      }
     };
     // Start immediately
     void poll();
@@ -508,7 +535,7 @@ export class MutagenManager {
     const changed =
       newStatus.state !== this.currentStatus.state ||
       newStatus.description !== this.currentStatus.description ||
-      newStatus.conflicts.length !== this.currentStatus.conflicts.length;
+      !sameConflictPaths(newStatus.conflicts, this.currentStatus.conflicts);
 
     this.currentStatus = newStatus;
     if (changed) {
@@ -607,4 +634,20 @@ export class MutagenManager {
       throw new Error('Mutagen not found');
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Return true when two conflict arrays contain exactly the same set of paths
+ * (order-independent). Used to avoid firing spurious status-change events when
+ * the conflict list is stable but internally reordered.
+ */
+function sameConflictPaths(a: ConflictEntry[], b: ConflictEntry[]): boolean {
+  if (a.length !== b.length) return false;
+  const aPaths = a.map(c => c.path).sort();
+  const bPaths = b.map(c => c.path).sort();
+  return aPaths.every((p, i) => p === bPaths[i]);
 }

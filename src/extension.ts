@@ -1,9 +1,9 @@
 import * as vscode from 'vscode';
-import { MutagenManager, SyncStatus } from './mutagenManager';
+import { MutagenManager, SyncStatus, listAllMutagenSessions } from './mutagenManager';
 import { StatusBarManager } from './statusBar';
 import { ConflictResolver } from './conflictResolver';
 import { runSetupWizard } from './setupWizard';
-import { readConfig, configExists, removeConfig, getConfigPath } from './config';
+import { readConfig, configExists, removeConfig, getConfigPath, deriveSessionName } from './config';
 import { ensureMutagen } from './mutagenInstaller';
 import { log, showOutput, disposeLogger } from './logger';
 
@@ -32,11 +32,16 @@ let managedMutagenPath: string | undefined;
 /** Map from workspace folder URI (string) → active session */
 const sessions = new Map<string, WorkspaceSession>();
 
+/** Captured extension context — used for workspaceState and subscriptions. */
+let ctx: vscode.ExtensionContext;
+
 // ---------------------------------------------------------------------------
 // Activate
 // ---------------------------------------------------------------------------
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
+  ctx = context;
+
   statusBar = new StatusBarManager();
   conflictResolver = new ConflictResolver(context.extensionUri);
 
@@ -91,7 +96,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
 async function installMutagen(globalStoragePath: string): Promise<void> {
   try {
-    // If already installed this is nearly instant (just a file existence check).
+    // If already installed at the pinned version this is nearly instant.
     managedMutagenPath = await vscode.window.withProgress(
       {
         location: vscode.ProgressLocation.Window,
@@ -135,21 +140,73 @@ export async function deactivate(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Session name resolution (unique per workspace path, persisted in workspaceState)
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve a stable, unique Mutagen session name for a workspace folder.
+ *
+ * The name is derived from the folder name (slugified), then checked for
+ * collisions with existing Mutagen sessions that point to different paths.
+ * A numeric suffix (-2, -3, …) is appended until the name is unique.
+ *
+ * The resolved name is stored in workspaceState so subsequent opens use the
+ * same name without re-querying Mutagen.
+ */
+async function resolveSessionName(folder: vscode.WorkspaceFolder): Promise<string> {
+  const stateKey = `sessionName:${folder.uri.toString()}`;
+  const stored = ctx.workspaceState.get<string>(stateKey);
+  if (stored) {
+    log(`Session name (from workspaceState): "${stored}"`);
+    return stored;
+  }
+
+  const base = deriveSessionName(folder);
+  const mutagenBin = resolveMutagenBinary();
+  const allSessions = await listAllMutagenSessions(mutagenBin);
+
+  let name = base;
+  let suffix = 2;
+  // Increment suffix until name isn't taken by a session for a different path
+  while (allSessions.some(s => s.name === name && s.alpha?.path !== folder.uri.fsPath)) {
+    name = `${base}-${suffix++}`;
+  }
+
+  log(`Session name (derived): "${name}"${name !== base ? ` (base "${base}" was taken)` : ''}`);
+  await ctx.workspaceState.update(stateKey, name);
+  return name;
+}
+
+/** Resolve which mutagen binary to use, respecting settings and managed binary. */
+function resolveMutagenBinary(): string {
+  const configured = vscode.workspace.getConfiguration('mutagenSync').get<string>('mutagenPath');
+  if (configured && configured !== 'mutagen') return configured;
+  return managedMutagenPath ?? 'mutagen';
+}
+
+// ---------------------------------------------------------------------------
 // Auto-connect logic
 // ---------------------------------------------------------------------------
 
 async function tryAutoConnect(folder: vscode.WorkspaceFolder): Promise<void> {
   log(`tryAutoConnect: ${folder.name}`);
   if (!configExists(folder)) {
-    log(`No config found for ${folder.name} — showing "not connected" state.`);
-    statusBar.setNoConfig();
+    log(`No config found for ${folder.name}`);
+    // Only show "not connected" if no other folder has a running session.
+    // This prevents a config-less folder from clobbering another folder's
+    // active status in multi-root workspaces.
+    if (sessions.size === 0) {
+      statusBar.setNoConfig();
+    }
     return;
   }
 
   const config = readConfig(folder);
   if (!config) {
     log(`Config unreadable for ${folder.name}`);
-    statusBar.setNoConfig();
+    if (sessions.size === 0) {
+      statusBar.setNoConfig();
+    }
     return;
   }
 
@@ -173,7 +230,8 @@ async function startSession(folder: vscode.WorkspaceFolder): Promise<void> {
   const config = readConfig(folder);
   if (!config) return;
 
-  const manager = new MutagenManager(folder, config, managedMutagenPath);
+  const sessionName = await resolveSessionName(folder);
+  const manager = new MutagenManager(folder, config, managedMutagenPath, sessionName);
 
   // Subscribe to status updates
   const disposable = manager.onStatusChanged.event((status: SyncStatus) => {
@@ -186,6 +244,10 @@ async function startSession(folder: vscode.WorkspaceFolder): Promise<void> {
   });
 
   sessions.set(key, { manager, disposable });
+
+  // Watch the config file for external edits while the session is running.
+  // Prompt to reconnect so new ignore patterns / host changes take effect.
+  attachConfigWatcher(folder, key);
 
   try {
     await vscode.window.withProgress(
@@ -213,6 +275,8 @@ async function teardownSession(key: string): Promise<void> {
   const session = sessions.get(key);
   if (!session) return;
   sessions.delete(key);
+  // Close the conflict panel if it belongs to this session's manager
+  conflictResolver.clearSession(session.manager);
   try {
     await session.manager.pause();
   } catch {
@@ -243,6 +307,42 @@ function getActiveWorkspaceFolder(): vscode.WorkspaceFolder | undefined {
   }
 
   return folders[0];
+}
+
+// ---------------------------------------------------------------------------
+// Config file watcher
+// ---------------------------------------------------------------------------
+
+/**
+ * Watch .vscode/remote-sync.json for external edits while a session is running.
+ * Prompts the user to reconnect so changes (ignore patterns, host, etc.) take
+ * effect.  Debounced to avoid reacting to partial writes from editors that
+ * save in multiple chunks.
+ */
+function attachConfigWatcher(folder: vscode.WorkspaceFolder, sessionKey: string): void {
+  const watcher = vscode.workspace.createFileSystemWatcher(
+    new vscode.RelativePattern(folder, '.vscode/remote-sync.json')
+  );
+
+  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const onChange = () => {
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(async () => {
+      // Only prompt if the session is still running
+      if (!sessions.has(sessionKey)) return;
+      const action = await vscode.window.showInformationMessage(
+        `Mutagen Sync: Configuration changed in "${folder.name}" — reconnect to apply?`,
+        'Reconnect',
+        'Later'
+      );
+      if (action === 'Reconnect') {
+        await startSession(folder);
+      }
+    }, 1000); // 1 s debounce
+  };
+
+  ctx.subscriptions.push(watcher, watcher.onDidChange(onChange));
 }
 
 // ---------------------------------------------------------------------------
@@ -374,6 +474,7 @@ async function cmdReconnect(): Promise<void> {
   const session = sessions.get(key);
   if (session) {
     sessions.delete(key);
+    conflictResolver.clearSession(session.manager);
     try { await session.manager.terminate(); } catch { /* best effort */ }
     session.disposable.dispose();
     session.manager.dispose();
@@ -402,6 +503,7 @@ async function cmdDisconnect(): Promise<void> {
   const key = folder.uri.toString();
   const session = sessions.get(key);
   if (session) {
+    conflictResolver.clearSession(session.manager);
     await session.manager.terminate();
     session.disposable.dispose();
     session.manager.dispose();

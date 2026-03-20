@@ -13,6 +13,7 @@ A VS Code / Cursor extension that keeps your local workspace in continuous two-w
 - **Conflict resolution panel** — side-by-side VS Code native diff with *Use Local* / *Use Server* / *View Diff* actions
 - **Configurable ignores** — all ignore patterns are written to `.vscode/remote-sync.json`; delete any you don't want
 - **Session pause on close** — workspace close pauses the session; reopening resumes it instantly
+- **Auto-resume** — reopening a workspace that has a config automatically reconnects without any extra steps
 - **Debug output channel** — opt-in verbose logging of every CLI call and status transition
 
 ---
@@ -23,18 +24,20 @@ Mutagen is **automatically downloaded** from GitHub Releases on first use — no
 
 - VS Code ≥ 1.85 or Cursor
 - SSH access to the remote server
-- macOS, Linux (Windows not yet tested)
+- macOS or Linux (Windows builds are included but untested)
 
 ---
 
 ## Quick Start
 
 1. Open a workspace folder
-2. Click the **$(circle-slash) Mutagen** item in the status bar, or run **Remote Sync: Connect to Server** from the command palette
+2. Click the **$(plug) Mutagen: Not connected** item in the status bar, or run **Remote Sync: Connect to Server** from the command palette
 3. Follow the 4-step wizard:
    - Enter host, port, username, remote path *(pre-filled automatically from `.vscode/sftp.json` if present, otherwise from the workspace's SSH git remote)*
    - The extension tests your existing SSH key; if it doesn't work it will ask for your password and install the key for you
 4. Sync starts automatically — the status bar turns to **$(check) Watching** when all files are in sync
+
+> **Tip:** On subsequent workspace opens, the extension auto-connects using the saved `.vscode/remote-sync.json` — no wizard needed.
 
 ---
 
@@ -48,23 +51,21 @@ All per-project settings live in `.vscode/remote-sync.json`:
   "port": 22,
   "username": "ubuntu",
   "remotePath": "/var/www/myproject/",
-  "ignores": [
+  "ignore": [
     ".git",
     ".env",
     "*.env",
     ".env.*",
     ".DS_Store",
     "Thumbs.db",
-    "desktop.ini",
-    "node_modules",
-    "dist"
+    "desktop.ini"
   ]
 }
 ```
 
-Edit `ignores` freely — remove patterns you don't need, add your own. There are no hidden hardcoded ignores.
+The wizard pre-fills `ignore` with the defaults above. Add any extra patterns you need (e.g. `"node_modules"`, `"dist"`, `"*.log"`). There are no hidden hardcoded ignores — the config is the single source of truth.
 
-> **After editing ignores, click the status bar → Reconnect** (or Disconnect + Connect). Ignore patterns are passed as flags when the Mutagen session is created and are not reloaded while the session is running.
+> **After editing ignore patterns, click the status bar → Reconnect** (or Disconnect + Connect). Ignore patterns are passed as flags when the Mutagen session is created and are not reloaded while the session is running.
 
 #### Ignore pattern syntax
 
@@ -134,8 +135,8 @@ The extension wraps [Mutagen](https://mutagen.io) — a purpose-built file synch
 
 The extension's role is:
 1. **Installer** — downloads the correct Mutagen binary + agent bundle for your platform into VS Code's `globalStorage` on first use
-2. **Session manager** — creates/resumes/pauses Mutagen sync sessions keyed by workspace folder
-3. **Status poller** — polls `mutagen sync list` every 2 seconds and maps the JSON output to status bar states
+2. **Session manager** — creates/resumes/pauses Mutagen sync sessions keyed by workspace folder; stale sessions from previous crashed runs are cleaned up automatically
+3. **Status poller** — polls `mutagen sync list` every 2 seconds and maps the JSON output to status bar states; daemon/client version mismatches are detected and recovered automatically
 4. **Conflict UI** — fetches remote file content via `scp` and presents a resolution interface
 
 ---
